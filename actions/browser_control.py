@@ -38,6 +38,34 @@ def _normalize_url(url: str) -> str:
     return "https://" + url
 
 
+_BLANK_URLS = ("about:blank", "", "chrome://newtab/", "chrome://new-tab-page/")
+
+
+def _is_blank(url: str) -> bool:
+    u = (url or "").strip().lower()
+    return (
+        u in _BLANK_URLS
+        or u.startswith("about:")
+        or u.startswith("chrome://")
+        or u.startswith("chrome-error://")   # Chromium's failed-load page
+    )
+
+
+def _profile_lock_pid(profile: str) -> Optional[int]:
+    """PID of a running browser holding this profile, or None if it is free.
+
+    Chrome refuses to share a profile: a second launch on a profile the user's
+    own browser already has open either hands off to that browser or paints a
+    black/blank window. engine.browser_core already knows how to read Chrome's
+    SingletonLock, so reuse it rather than keeping a second copy of the rules.
+    """
+    try:
+        from engine.browser_core import profile_in_use
+        return profile_in_use(Path(profile))
+    except Exception:
+        return None
+
+
 def _user_agent() -> str:
     if _OS == "Windows":
         return (
@@ -458,6 +486,11 @@ class _BrowserSession:
         self._pw:      Playwright     | None = None
         self._context: BrowserContext | None = None
         self._page:    Page           | None = None
+        self._launch_note: str        = ""
+        # Where to send the first page once the context opens. A persistent
+        # profile's restored tab is often about:blank; navigating here means the
+        # automation window never appears black/blank.
+        self._start_url: str          = ""
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -486,6 +519,15 @@ class _BrowserSession:
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result(timeout=timeout)
 
+    def set_start_url(self, url: str) -> None:
+        """Page the automation window should open on (used by _adopt_page)."""
+        self._start_url = url or ""
+
+    def pop_launch_note(self) -> str:
+        """Return and clear the note explaining a profile fallback."""
+        note, self._launch_note = self._launch_note, ""
+        return note
+
     def close(self):
         if self._loop:
             asyncio.run_coroutine_threadsafe(self._async_close(), self._loop).result(10)
@@ -511,7 +553,26 @@ class _BrowserSession:
         """
         await asyncio.sleep(0.3)
         pages = self._context.pages
-        return pages[0] if pages else await self._context.new_page()
+        # A restored profile can hand back a stale blank tab first; prefer a
+        # page that already has a real URL so the window is never blank.
+        page = None
+        for candidate in reversed(pages):
+            if not _is_blank(candidate.url):
+                page = candidate
+                break
+        if page is None:
+            page = pages[0] if pages else await self._context.new_page()
+
+        # If we still have nothing to show, go to the requested start URL (the
+        # page the user asked for, or the last natively-opened one) rather than
+        # sitting on about:blank.
+        if _is_blank(page.url) and self._start_url:
+            try:
+                await page.goto(self._start_url, wait_until="domcontentloaded",
+                                timeout=30_000)
+            except Exception as e:
+                print(f"[Browser] Start navigation to {self._start_url} failed: {e}")
+        return page
 
     async def _launch(self):
         """
@@ -572,6 +633,22 @@ class _BrowserSession:
             return
 
         profile = _real_profile_dir(self.browser_name)
+
+        # If the user's own browser already holds this profile, launching a
+        # second context on it yields a window that never paints (the black
+        # screen) or hands off to the running browser. Use the automation
+        # profile instead, and tell the user why their logins may be missing.
+        lock_pid = _profile_lock_pid(profile)
+        if lock_pid is not None:
+            self._launch_note = (
+                f"{self.browser_name.title()} (PID {lock_pid}) already has this "
+                f"profile open, so Zara used its own browser profile. Saved logins "
+                f"for the main profile are not available; close {self.browser_name.title()} "
+                f"and retry to reuse them."
+            )
+            print(f"[Browser] {self._launch_note}")
+            profile = str(Path.home() / ".jarvis_profiles" / self.browser_name)
+            Path(profile).mkdir(parents=True, exist_ok=True)
 
         kwargs = {
             "headless":    False,
@@ -634,35 +711,51 @@ class _BrowserSession:
 
     async def go_to(self, url: str) -> str:
 
-        url      = _normalize_url(url)
-        page     = await self._get_page()
-        prev_url = page.url
+        url  = _normalize_url(url)
+        page = await self._get_page()
 
-        async def _do_goto(p: Page) -> str:
-            """Attempt navigation and return the resulting URL (may still be blank)."""
+        # A failed goto leaves the page on its PREVIOUS url, so a non-blank url
+        # is not on its own evidence of success. Success is: the url changed, or
+        # the load raised nothing. Chromium's chrome-error page is a failure
+        # regardless. This accepts redirects (amazon.com -> www.amazon.com).
+        prev_url = page.url or ""
+
+        async def _do_goto(p: Page) -> tuple[bool, str]:
+            """Return (reached_target, url_after)."""
+            hard_error = False
             try:
                 await p.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 await asyncio.sleep(0.3)
             except PlaywrightTimeout:
-                pass   # page may have partially loaded — check URL below
+                pass   # page may have partially loaded — judged by the url below
             except Exception as e:
+                hard_error = True
                 print(f"[Browser] goto exception (non-fatal): {e}")
-            return p.url
+            current = p.url or ""
+            if _is_blank(current):
+                return False, current
+            if current != prev_url:
+                return True, current
+            return (not hard_error), current
 
-        result_url = await _do_goto(page)
+        ok, result_url = await _do_goto(page)
 
-        if result_url in ("about:blank", "", None, prev_url) and prev_url in ("about:blank", "", None):
-            print(f"[Browser] Still blank after goto — retrying on new tab: {url}")
+        # Retry once on a fresh tab: covers a dead first tab, a first-run tab,
+        # and the transient error that leaves the window blank.
+        if not ok:
+            print(f"[Browser] goto did not reach {url} (at {result_url!r}) — retrying on a new tab")
             try:
                 new_page   = await self._context.new_page()
                 self._page = new_page
-                result_url = await _do_goto(new_page)
+                ok, result_url = await _do_goto(new_page)
             except Exception as e:
                 print(f"[Browser] New-tab retry failed: {e}")
 
-        if result_url and result_url not in ("about:blank", "", None):
+        if ok:
             return f"Opened: {result_url}"
-        return f"Could not open: {url}"
+        note = self._launch_note
+        suffix = f" ({note})" if note else ""
+        return f"Could not open: {url} — the page did not load{suffix}"
 
     async def search(self, query: str, engine: str = "google") -> str:
         base = _SEARCH_ENGINES.get(engine.lower(), _SEARCH_ENGINES["google"])
@@ -1004,8 +1097,14 @@ def browser_control(
         _log(player, result)
         return result
 
+    # The automation window must open on the user's last page, not about:blank
+    # (which reads as a black screen). Tell the session where to start before it
+    # launches, then resume there explicitly for an already-running session.
+    last = _registry.pop_native_url()
+    if last:
+        sess.set_start_url(last)
+
     try:
-        last = _registry.pop_native_url()
         if last:
             try:
                 sess.run(sess.go_to(last))
@@ -1048,6 +1147,12 @@ def browser_control(
         result = f"Browser action '{action}' timed out (60s)."
     except Exception as e:
         result = f"Browser error ({action}): {e}"
+
+    # Tell the user when we had to use the automation profile instead of their
+    # own, so missing logins are explained rather than mysterious.
+    note = sess.pop_launch_note()
+    if note:
+        result = f"{result} ({note})"
 
     _log(player, result)
     return result
