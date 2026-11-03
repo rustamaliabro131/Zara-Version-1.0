@@ -29,7 +29,25 @@ logger = logging.getLogger("zara.action.browser_automation")
 def browser_automation(parameters: dict, player=None, speak=None) -> str:
     """
     Dispatcher for Zara's Autonomous Browser Control Engine.
+
+    The workflow runs on BrowserCore's dedicated Playwright thread: the skills
+    below drive a sync `page` object directly, and a sync Playwright connection
+    may only be touched by the thread that owns it. Marshalling the whole
+    workflow (not just the launch) keeps every page call on that thread and off
+    Zara's asyncio loop, which is what raised "Playwright Sync API inside the
+    asyncio loop" before.
+    """
+    from engine.browser_core import BrowserCore
+    core = BrowserCore.get_instance()
+    return core.run_on_browser_thread(
+        lambda: _run_browser_automation(parameters, player, speak)
+    )
+
+
+def _run_browser_automation(parameters: dict, player=None, speak=None) -> str:
+    """
     Executes tasks with human-like interactions, persistent logins, and vision fallbacks.
+    Runs on BrowserCore's Playwright owner thread.
     """
     params = parameters or {}
     platform = str(params.get("platform") or "").lower().strip()
