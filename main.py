@@ -754,6 +754,80 @@ def _is_modality_error(err_str: str) -> bool:
     return any(k in s for k in _MODALITY_ERRORS)
 
 
+def _parse_browser_intent(text: str) -> Optional[dict]:
+    """Parse text command for direct browser automation workflows."""
+    if not text:
+        return None
+    raw = text.strip()
+    lower = raw.lower()
+
+    # Upwork
+    if "upwork.com" in lower or (("bid" in lower or "proposal" in lower) and "upwork" in lower):
+        import re
+        url_match = re.search(r"https?://(?:www\.)?upwork\.com/\S+", raw)
+        url = url_match.group(0) if url_match else ""
+        clean_text = lower.replace(url.lower(), "")
+        rate_match = re.search(r"(?:\$|rate\s+|bid\s+|at\s+)(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:/hr|per hour|\$)", clean_text)
+        amount = (rate_match.group(1) or rate_match.group(2)) if rate_match else None
+        return {
+            "platform": "upwork",
+            "action": "bid",
+            "url": url,
+            "amount": amount,
+            "explicit": True,
+        }
+
+    # Amazon KDP
+    if "kdp" in lower or (("publish" in lower or "upload" in lower) and ("ebook" in lower or "book" in lower or "kindle" in lower)):
+        import re
+        quote_match = re.search(r"['\"]([^'\"]+)['\"]", raw)
+        if quote_match:
+            title = quote_match.group(1)
+        else:
+            title = re.sub(r"(?i)^(?:publish|upload|kdp|amazon|ebook|book|to)\s+", "", raw).strip()
+        return {
+            "platform": "amazon_kdp",
+            "action": "publish",
+            "title": title or "My New eBook",
+            "explicit": True,
+        }
+
+    # Fiverr
+    if "fiverr" in lower or (("create" in lower or "make" in lower) and "gig" in lower):
+        import re
+        title = re.sub(r"(?i)^(?:create|make|publish|fiverr|gig|a|for)\s+", "", raw).strip()
+        return {
+            "platform": "fiverr",
+            "action": "create_gig",
+            "title": title or "develop python ai agent automation",
+            "explicit": True,
+        }
+
+    # Facebook
+    if ("facebook" in lower or "fb " in lower) and ("post" in lower or "publish" in lower or "share" in lower):
+        import re
+        post_text = re.sub(r"(?i)^(?:post|publish|share|to|on|facebook|fb)[:\s]+", "", raw).strip()
+        return {
+            "platform": "facebook",
+            "action": "post",
+            "text": post_text,
+            "explicit": True,
+        }
+
+    # Daraz
+    if "daraz" in lower or (("buy" in lower or "order" in lower or "search" in lower) and "daraz" in lower):
+        import re
+        query = re.sub(r"(?i)^(?:search|buy|order|find|on|in|daraz)[:\s]+", "", raw).strip()
+        return {
+            "platform": "daraz",
+            "action": "shop",
+            "query": query,
+            "explicit": True,
+        }
+
+    return None
+
+
 class ZaraLive:
     def __init__(self, ui: "ZaraUI"):
         self.ui             = ui
@@ -1069,79 +1143,6 @@ class ZaraLive:
         manual = self._dashboard.get_manual_url()
         return url, key, f"{url}/auto-login?key={key}", manual
 
-
-def _parse_browser_intent(text: str) -> Optional[dict]:
-    """Parse text command for direct browser automation workflows."""
-    if not text:
-        return None
-    raw = text.strip()
-    lower = raw.lower()
-
-    # Upwork
-    if "upwork.com" in lower or (("bid" in lower or "proposal" in lower) and "upwork" in lower):
-        import re
-        url_match = re.search(r"https?://(?:www\.)?upwork\.com/\S+", raw)
-        url = url_match.group(0) if url_match else ""
-        clean_text = lower.replace(url.lower(), "")
-        rate_match = re.search(r"(?:\$|rate\s+|bid\s+|at\s+)(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:/hr|per hour|\$)", clean_text)
-        amount = (rate_match.group(1) or rate_match.group(2)) if rate_match else None
-        return {
-            "platform": "upwork",
-            "action": "bid",
-            "url": url,
-            "amount": amount,
-            "explicit": True,
-        }
-
-    # Amazon KDP
-    if "kdp" in lower or (("publish" in lower or "upload" in lower) and ("ebook" in lower or "book" in lower or "kindle" in lower)):
-        import re
-        quote_match = re.search(r"['\"]([^'\"]+)['\"]", raw)
-        if quote_match:
-            title = quote_match.group(1)
-        else:
-            title = re.sub(r"(?i)^(?:publish|upload|kdp|amazon|ebook|book|to)\s+", "", raw).strip()
-        return {
-            "platform": "amazon_kdp",
-            "action": "publish",
-            "title": title or "My New eBook",
-            "explicit": True,
-        }
-
-    # Fiverr
-    if "fiverr" in lower or (("create" in lower or "make" in lower) and "gig" in lower):
-        import re
-        title = re.sub(r"(?i)^(?:create|make|publish|fiverr|gig|a|for)\s+", "", raw).strip()
-        return {
-            "platform": "fiverr",
-            "action": "create_gig",
-            "title": title or "develop python ai agent automation",
-            "explicit": True,
-        }
-
-    # Facebook
-    if ("facebook" in lower or "fb " in lower) and ("post" in lower or "publish" in lower or "share" in lower):
-        import re
-        post_text = re.sub(r"(?i)^(?:post|publish|share|to|on|facebook|fb)[:\s]+", "", raw).strip()
-        return {
-            "platform": "facebook",
-            "action": "post",
-            "text": post_text,
-            "explicit": True,
-        }
-
-    # Daraz
-    if "daraz" in lower or (("buy" in lower or "order" in lower or "search" in lower) and "daraz" in lower):
-        import re
-        query = re.sub(r"(?i)^(?:search|buy|order|find|on|in|daraz)[:\s]+", "", raw).strip()
-        return {
-            "platform": "daraz",
-            "action": "shop",
-            "query": query,
-            "explicit": True,
-        }
-
-    return None
 
     def _dispatch_direct_browser_automation(self, params: dict):
         self.ui.write_log(f"SYS: Launching browser automation for {params.get('platform', 'web')}...")
