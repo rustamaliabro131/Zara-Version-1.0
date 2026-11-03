@@ -17,7 +17,7 @@ import time
 from typing import Optional, Callable
 
 from core import gemini
-from engine.browser_core import BrowserCore
+from engine.browser_core import BrowserCore, NavigationError, wait_for_domain
 from engine.human_browser import HumanBrowser
 from engine.browser_vision import BrowserVision
 from gui.animated_avatar import push_state
@@ -78,8 +78,18 @@ def submit_upwork_proposal(
 
     try:
         # Step 1: Navigate to Job URL
-        page = core.navigate(job_url)
+        page = core.navigate(job_url, timeout=60000)
         time.sleep(random.uniform(2.0, 3.5))
+
+        if not wait_for_domain(page, "upwork.com"):
+            msg = (
+                f"Upwork did not load — the page is still on "
+                f"'{page.url or 'about:blank'}'. Please check your connection "
+                f"and that no other Chrome window holds the browser profile, then retry."
+            )
+            log(msg)
+            push_state("Idle")
+            return msg
 
         # Check if login is needed
         if "login" in page.url.lower():
@@ -209,6 +219,11 @@ def submit_upwork_proposal(
         else:
             return "Proposal typed into form. Please inspect browser to complete final submission."
 
+    except NavigationError as e:
+        push_state("Idle")
+        note = core.consume_launch_note()
+        logger.error(f"[UpworkBidder] Navigation failed: {e}")
+        return f"Upwork automation could not open the site: {e}" + (f" {note}" if note else "")
     except Exception as e:
         logger.error(f"[UpworkBidder] Error during proposal submission: {e}", exc_info=True)
         push_state("Idle")

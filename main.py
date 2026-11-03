@@ -754,6 +754,80 @@ def _is_modality_error(err_str: str) -> bool:
     return any(k in s for k in _MODALITY_ERRORS)
 
 
+def _parse_browser_intent(text: str) -> Optional[dict]:
+    """Parse text command for direct browser automation workflows."""
+    if not text:
+        return None
+    raw = text.strip()
+    lower = raw.lower()
+
+    # Upwork
+    if "upwork.com" in lower or (("bid" in lower or "proposal" in lower) and "upwork" in lower):
+        import re
+        url_match = re.search(r"https?://(?:www\.)?upwork\.com/\S+", raw)
+        url = url_match.group(0) if url_match else ""
+        clean_text = lower.replace(url.lower(), "")
+        rate_match = re.search(r"(?:\$|rate\s+|bid\s+|at\s+)(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:/hr|per hour|\$)", clean_text)
+        amount = (rate_match.group(1) or rate_match.group(2)) if rate_match else None
+        return {
+            "platform": "upwork",
+            "action": "bid",
+            "url": url,
+            "amount": amount,
+            "explicit": True,
+        }
+
+    # Amazon KDP
+    if "kdp" in lower or (("publish" in lower or "upload" in lower) and ("ebook" in lower or "book" in lower or "kindle" in lower)):
+        import re
+        quote_match = re.search(r"['\"]([^'\"]+)['\"]", raw)
+        if quote_match:
+            title = quote_match.group(1)
+        else:
+            title = re.sub(r"(?i)^(?:publish|upload|kdp|amazon|ebook|book|to)\s+", "", raw).strip()
+        return {
+            "platform": "amazon_kdp",
+            "action": "publish",
+            "title": title or "My New eBook",
+            "explicit": True,
+        }
+
+    # Fiverr
+    if "fiverr" in lower or (("create" in lower or "make" in lower) and "gig" in lower):
+        import re
+        title = re.sub(r"(?i)^(?:create|make|publish|fiverr|gig|a|for)\s+", "", raw).strip()
+        return {
+            "platform": "fiverr",
+            "action": "create_gig",
+            "title": title or "develop python ai agent automation",
+            "explicit": True,
+        }
+
+    # Facebook
+    if ("facebook" in lower or "fb " in lower) and ("post" in lower or "publish" in lower or "share" in lower):
+        import re
+        post_text = re.sub(r"(?i)^(?:post|publish|share|to|on|facebook|fb)[:\s]+", "", raw).strip()
+        return {
+            "platform": "facebook",
+            "action": "post",
+            "text": post_text,
+            "explicit": True,
+        }
+
+    # Daraz
+    if "daraz" in lower or (("buy" in lower or "order" in lower or "search" in lower) and "daraz" in lower):
+        import re
+        query = re.sub(r"(?i)^(?:search|buy|order|find|on|in|daraz)[:\s]+", "", raw).strip()
+        return {
+            "platform": "daraz",
+            "action": "shop",
+            "query": query,
+            "explicit": True,
+        }
+
+    return None
+
+
 class ZaraLive:
     def __init__(self, ui: "ZaraUI"):
         self.ui             = ui
@@ -1069,79 +1143,6 @@ class ZaraLive:
         manual = self._dashboard.get_manual_url()
         return url, key, f"{url}/auto-login?key={key}", manual
 
-
-def _parse_browser_intent(text: str) -> Optional[dict]:
-    """Parse text command for direct browser automation workflows."""
-    if not text:
-        return None
-    raw = text.strip()
-    lower = raw.lower()
-
-    # Upwork
-    if "upwork.com" in lower or (("bid" in lower or "proposal" in lower) and "upwork" in lower):
-        import re
-        url_match = re.search(r"https?://(?:www\.)?upwork\.com/\S+", raw)
-        url = url_match.group(0) if url_match else ""
-        clean_text = lower.replace(url.lower(), "")
-        rate_match = re.search(r"(?:\$|rate\s+|bid\s+|at\s+)(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:/hr|per hour|\$)", clean_text)
-        amount = (rate_match.group(1) or rate_match.group(2)) if rate_match else None
-        return {
-            "platform": "upwork",
-            "action": "bid",
-            "url": url,
-            "amount": amount,
-            "explicit": True,
-        }
-
-    # Amazon KDP
-    if "kdp" in lower or (("publish" in lower or "upload" in lower) and ("ebook" in lower or "book" in lower or "kindle" in lower)):
-        import re
-        quote_match = re.search(r"['\"]([^'\"]+)['\"]", raw)
-        if quote_match:
-            title = quote_match.group(1)
-        else:
-            title = re.sub(r"(?i)^(?:publish|upload|kdp|amazon|ebook|book|to)\s+", "", raw).strip()
-        return {
-            "platform": "amazon_kdp",
-            "action": "publish",
-            "title": title or "My New eBook",
-            "explicit": True,
-        }
-
-    # Fiverr
-    if "fiverr" in lower or (("create" in lower or "make" in lower) and "gig" in lower):
-        import re
-        title = re.sub(r"(?i)^(?:create|make|publish|fiverr|gig|a|for)\s+", "", raw).strip()
-        return {
-            "platform": "fiverr",
-            "action": "create_gig",
-            "title": title or "develop python ai agent automation",
-            "explicit": True,
-        }
-
-    # Facebook
-    if ("facebook" in lower or "fb " in lower) and ("post" in lower or "publish" in lower or "share" in lower):
-        import re
-        post_text = re.sub(r"(?i)^(?:post|publish|share|to|on|facebook|fb)[:\s]+", "", raw).strip()
-        return {
-            "platform": "facebook",
-            "action": "post",
-            "text": post_text,
-            "explicit": True,
-        }
-
-    # Daraz
-    if "daraz" in lower or (("buy" in lower or "order" in lower or "search" in lower) and "daraz" in lower):
-        import re
-        query = re.sub(r"(?i)^(?:search|buy|order|find|on|in|daraz)[:\s]+", "", raw).strip()
-        return {
-            "platform": "daraz",
-            "action": "shop",
-            "query": query,
-            "explicit": True,
-        }
-
-    return None
 
     def _dispatch_direct_browser_automation(self, params: dict):
         self.ui.write_log(f"SYS: Launching browser automation for {params.get('platform', 'web')}...")
@@ -3073,17 +3074,225 @@ def _start_gif_avatar(ui):
         return None
 
 
+# ── Startup initialisation (non-blocking) ───────────────────────────────────
+# The window paints before any of this runs. Everything heavy — the audio device
+# table, a local TTS model, the Gemini client, the Playwright browser core — is
+# warmed on a daemon thread so the Qt event loop is never blocked and the HUD can
+# sit on INITIALISING while the work happens. Each step is time-boxed and
+# best-effort, and the worker ALWAYS finishes by handing the HUD to Idle, so a
+# stalled Playwright launch or a slow model download can no longer leave the
+# avatar frozen on INITIALISING forever.
+#
+# There is no local STT step: the Live session does its recognition server-side
+# from the raw mic audio (see _listen_audio), and core/stt.py's Whisper/Vosk
+# engines are only used by offline skills. Warming them here would download a
+# model the normal startup never touches.
+_STARTUP_TIMEOUT = float(_os.environ.get("ZARA_INIT_TIMEOUT", "25") or 25)
+
+
+class _StartupCoordinator:
+    """Arbitrates the INITIALISING → Idle handshake.
+
+    Two producers race to publish the first real state: the session runner
+    (THINKING / LISTENING / SLEEPING once it connects) and the startup worker
+    (Idle when it is done). The runner must always win — a connect in progress
+    must never be overwritten by the worker's Idle — so the runner's publishes
+    are recorded here and the worker's Idle is suppressed once one has been seen.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._live = False
+        self._idle_done = False
+        self._orig_set_state = None
+
+    def mark_live(self) -> None:
+        with self._lock:
+            self._live = True
+
+    @property
+    def live(self) -> bool:
+        with self._lock:
+            return self._live
+
+    def publish_idle(self, ui, force: bool = False) -> bool:
+        """Publish the terminal Idle state once. True if it published.
+
+        `force` is for the failure path: when construction of the session blew
+        up there is no runner left to publish anything, so the HUD must be
+        rescued even though a partial state may already have been marked live.
+        """
+        with self._lock:
+            if self._idle_done:
+                return False
+            if self._live and not force:
+                return False
+            self._idle_done = True
+            orig = self._orig_set_state
+        _push_state_queue("Idle")
+        try:
+            (orig or ui.set_state)("Idle")
+        except Exception:
+            pass
+        return True
+
+
+def _push_state_queue(state: str) -> None:
+    """Push a ("STATE", state) tuple onto the avatar state_queue handshake."""
+    if animated_avatar is None:
+        return
+    try:
+        animated_avatar.push_state(state)
+    except Exception:
+        pass
+
+
+def _run_bounded(label: str, fn, deadline: float) -> bool:
+    """Run one warm-up step with a hard time bound.
+
+    A step that overruns its slice is abandoned, not waited on: the whole point
+    of the budget is that no single subsystem (a 330 MB model download, a
+    Playwright launch blocked on a profile lock) can hold the startup handshake
+    open. The step's own thread is a daemon and keeps warming in the background.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        print(f"[{LOG_TAG}] ⏱ Startup budget spent — skipping {label}.")
+        return False
+
+    done = threading.Event()
+
+    def _work():
+        try:
+            fn()
+        except Exception as e:
+            print(f"[{LOG_TAG}] ⚠ Startup step '{label}' failed (non-fatal): {e}")
+        finally:
+            done.set()
+
+    threading.Thread(target=_work, daemon=True, name=f"zara-warm-{label}").start()
+    if not done.wait(remaining):
+        print(f"[{LOG_TAG}] ⏱ Startup step '{label}' exceeded its budget — continuing without it.")
+        return False
+    return True
+
+
+def _warm_audio_devices() -> None:
+    audio_devices.configure(SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE)
+    audio_devices.prefetch()
+
+
+def _warm_api_client() -> None:
+    # Constructing the client reads the key and builds the HTTP layer; it does
+    # not connect, so a bad key still surfaces on the real connect where the
+    # retry loop can prompt for a new one.
+    genai.Client(api_key=_get_api_key(),
+                 http_options={"api_version": "v1alpha"})
+
+
+def _warm_tts_engine() -> None:
+    """Prime a local (Kokoro) voice model. Network engines need no warm-up."""
+    if _os.environ.get("ZARA_WARM_TTS", "1").strip().lower() in ("0", "off", "false", "no"):
+        return
+    try:
+        cfg = json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if (cfg.get("tts_engine") or "edgetts").lower() != "kokoro":
+        return
+    from core.tts import create_tts_player
+    create_tts_player(cfg)
+
+
+def _warm_browser_core() -> None:
+    """Opt-in Playwright warm-up — off by default so launch never opens a browser."""
+    if _os.environ.get("ZARA_WARM_BROWSER", "0").strip().lower() not in ("1", "on", "true", "yes"):
+        return
+    from engine.browser_core import BrowserCore
+    BrowserCore.get_instance().launch()
+
+
+def initialize_systems(ui, coord: Optional["_StartupCoordinator"] = None) -> None:
+    """Background startup worker. Never raises; always ends on a terminal state."""
+    coord = coord or _StartupCoordinator()
+    _push_state_queue("Initialising")
+    print(f"[{LOG_TAG}] Initialising systems in the background…")
+
+    deadline = time.monotonic() + _STARTUP_TIMEOUT
+    for label, step in (
+        ("audio-devices", _warm_audio_devices),
+        ("api-client",    _warm_api_client),
+        ("tts-engine",    _warm_tts_engine),
+        ("browser-core",  _warm_browser_core),
+    ):
+        _run_bounded(label, step, deadline)
+
+    # Hand the HUD over. Skipped while the setup modal is still asking for a key
+    # (the setup flow owns that transition) or once the session has published a
+    # state of its own.
+    ready = bool(getattr(getattr(ui, "_win", None), "_ready", True))
+    if ready:
+        coord.publish_idle(ui)
+    print(f"[{LOG_TAG}] Startup initialisation complete.")
+
+
+def _install_startup_state_guard(ui, coord: "_StartupCoordinator") -> None:
+    """Record the session's first real state so the startup worker yields to it.
+
+    Wraps ui.set_state — the one funnel every backend state change goes through
+    — rather than editing every call site. The startup worker calls the saved
+    original directly, so its own Idle handshake does not count as "live".
+    """
+    try:
+        coord._orig_set_state = ui.set_state
+
+        def _guarded(state, _orig=coord._orig_set_state):
+            coord.mark_live()
+            return _orig(state)
+
+        ui.set_state = _guarded
+    except Exception as e:
+        print(f"[{LOG_TAG}] ⚠ Startup state guard not installed: {e}")
+
+
 def main():
     ui = ZaraUI()
     _start_gif_avatar(ui)
 
+    coord = _StartupCoordinator()
+    _install_startup_state_guard(ui, coord)
+
+    # Heavy warm-up on its own daemon thread, so the window paints at once and
+    # the HUD shows INITIALISING while it works.
+    threading.Thread(
+        target=initialize_systems, args=(ui, coord),
+        daemon=True, name="zara-startup-init",
+    ).start()
+
     def runner():
         ui.wait_for_api_key()
-        zara = ZaraLive(ui)
+        try:
+            zara = ZaraLive(ui)
+        except Exception as e:
+            # Construction failed. Without this the thread dies silently and the
+            # HUD is stranded on INITIALISING forever — the exact freeze this
+            # startup path exists to prevent.
+            print(f"[{LOG_TAG}] ❌ Startup failed: {e}")
+            traceback.print_exc()
+            try:
+                ui.write_log(f"ERR: startup failed — {str(e)[:120]}")
+            except Exception:
+                pass
+            coord.publish_idle(ui, force=True)
+            return
         try:
             asyncio.run(zara.run())
         except KeyboardInterrupt:
             print("\n🔴 Shutting down...")
+        except Exception as e:
+            print(f"[{LOG_TAG}] ❌ Session loop ended: {e}")
+            traceback.print_exc()
+            coord.publish_idle(ui, force=True)
         finally:
             # The watcher is a daemon thread, so the process would exit without
             # this — but stopping it explicitly means the "Watching …" line is
@@ -3095,7 +3304,7 @@ def main():
             # talking to a process that is no longer listening.
             zara._stop_call_listener()
 
-    threading.Thread(target=runner, daemon=True).start()
+    threading.Thread(target=runner, daemon=True, name="zara-session").start()
     ui.root.mainloop()
 
 

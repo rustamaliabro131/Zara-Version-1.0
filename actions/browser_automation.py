@@ -29,7 +29,25 @@ logger = logging.getLogger("zara.action.browser_automation")
 def browser_automation(parameters: dict, player=None, speak=None) -> str:
     """
     Dispatcher for Zara's Autonomous Browser Control Engine.
+
+    The workflow runs on BrowserCore's dedicated Playwright thread: the skills
+    below drive a sync `page` object directly, and a sync Playwright connection
+    may only be touched by the thread that owns it. Marshalling the whole
+    workflow (not just the launch) keeps every page call on that thread and off
+    Zara's asyncio loop, which is what raised "Playwright Sync API inside the
+    asyncio loop" before.
+    """
+    from engine.browser_core import BrowserCore
+    core = BrowserCore.get_instance()
+    return core.run_on_browser_thread(
+        lambda: _run_browser_automation(parameters, player, speak)
+    )
+
+
+def _run_browser_automation(parameters: dict, player=None, speak=None) -> str:
+    """
     Executes tasks with human-like interactions, persistent logins, and vision fallbacks.
+    Runs on BrowserCore's Playwright owner thread.
     """
     params = parameters or {}
     platform = str(params.get("platform") or "").lower().strip()
@@ -132,10 +150,15 @@ def browser_automation(parameters: dict, player=None, speak=None) -> str:
 
     # Fallback / General URL Navigation
     elif url:
-        from engine.browser_core import BrowserCore
+        from engine.browser_core import BrowserCore, NavigationError
         core = BrowserCore.get_instance()
-        page = core.navigate(url)
-        return f"Navigated to {url} using persistent browser session."
+        try:
+            page = core.navigate(url, timeout=60000)
+        except NavigationError as e:
+            note = core.consume_launch_note()
+            log(f"Navigation failed: {e}")
+            return f"Could not open {url}: {e}" + (f" {note}" if note else "")
+        return f"Navigated to {page.url} using persistent browser session."
 
     else:
         return (

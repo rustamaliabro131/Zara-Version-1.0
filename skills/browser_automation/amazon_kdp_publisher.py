@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional, List, Callable
 
 from core import gemini
-from engine.browser_core import BrowserCore
+from engine.browser_core import BrowserCore, NavigationError, wait_for_domain
 from engine.human_browser import HumanBrowser
 from engine.browser_vision import BrowserVision
 from gui.animated_avatar import push_state
@@ -86,8 +86,18 @@ def publish_kdp_ebook(
     try:
         # Step 1: Navigate to KDP Bookshelf
         kdp_url = "https://kdp.amazon.com/en_US/bookshelf"
-        page = core.navigate(kdp_url)
+        page = core.navigate(kdp_url, timeout=60000)
         time.sleep(random.uniform(2.5, 4.0))
+
+        if not wait_for_domain(page, "amazon.com"):
+            msg = (
+                f"Amazon KDP did not load — the page is still on "
+                f"'{page.url or 'about:blank'}'. Please check your connection "
+                f"and that no other Chrome window holds the browser profile, then retry."
+            )
+            log(msg)
+            push_state("Idle")
+            return msg
 
         if "signin" in page.url.lower() or "ap/signin" in page.url.lower():
             msg = "Amazon KDP sign-in detected. Please log in on the browser window to continue."
@@ -286,6 +296,11 @@ def publish_kdp_ebook(
             log(res)
             return res
 
+    except NavigationError as e:
+        push_state("Idle")
+        note = core.consume_launch_note()
+        logger.error(f"[KDPPublisher] Navigation failed: {e}")
+        return f"Amazon KDP automation could not open the site: {e}" + (f" {note}" if note else "")
     except Exception as e:
         logger.error(f"[KDPPublisher] Error in KDP publishing: {e}", exc_info=True)
         push_state("Idle")

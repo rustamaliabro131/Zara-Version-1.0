@@ -16,7 +16,7 @@ import random
 import time
 from typing import Optional, Callable
 
-from engine.browser_core import BrowserCore
+from engine.browser_core import BrowserCore, NavigationError, wait_for_domain
 from engine.human_browser import HumanBrowser
 from engine.browser_vision import BrowserVision
 from gui.animated_avatar import push_state
@@ -52,8 +52,18 @@ def shop_daraz(
     try:
         # Step 1: Open Daraz
         daraz_url = f"https://www.daraz.{domain}"
-        page = core.navigate(daraz_url)
+        page = core.navigate(daraz_url, timeout=60000)
         time.sleep(random.uniform(2.5, 4.0))
+
+        if not wait_for_domain(page, f"daraz.{domain}"):
+            msg = (
+                f"Daraz did not load — the page is still on "
+                f"'{page.url or 'about:blank'}'. Please check your connection "
+                f"and that no other Chrome window holds the browser profile, then retry."
+            )
+            log(msg)
+            push_state("Idle")
+            return msg
 
         # Close any promotional popup if present
         popup_selectors = [
@@ -145,6 +155,11 @@ def shop_daraz(
         log(res)
         return res
 
+    except NavigationError as e:
+        push_state("Idle")
+        note = core.consume_launch_note()
+        logger.error(f"[DarazShopper] Navigation failed: {e}")
+        return f"Daraz automation could not open the site: {e}" + (f" {note}" if note else "")
     except Exception as e:
         logger.error(f"[DarazShopper] Error in Daraz workflow: {e}", exc_info=True)
         push_state("Idle")
