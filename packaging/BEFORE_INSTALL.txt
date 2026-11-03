@@ -1,0 +1,32 @@
+Zara AI Assistant
+=================
+
+Thank you for installing Zara.
+
+What happens after installation
+-------------------------------
+1. Launch Zara from the Start Menu or the desktop shortcut.
+2. On first run Zara asks for a free Google Gemini API key. Get one at
+   https://aistudio.google.com/apikey and paste it in. The key is stored
+   locally in the app folder (config\api_keys.json) and never leaves your
+   computer except in calls to Google's API.
+
+Requirements
+------------
+* Windows 10 or 11 (64-bit)
+* A working microphone and speakers for voice interaction
+* An internet connection for the Gemini Live session and web search
+
+Optional features
+-----------------
+* Browser automation (web browsing, form filling) uses a bundled copy of
+  Chromium, so it works without any extra downloads.
+* Local "Hey Zara" wake-word and offline speech engines are opt-in and are not
+  included, to keep the download small. They can be enabled from the app's
+  settings later.
+
+Privacy
+-------
+Conversation memory, settings and logs stay in the Zara AI folder on this PC.
+Uninstalling removes the program; the uninstaller also cleans up the files Zara
+generated while running.

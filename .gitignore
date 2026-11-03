@@ -48,6 +48,10 @@ dist/
 *.egg-info/
 .eggs/
 
+# Packaging: the Chromium build that packaging/build.py downloads to bundle
+# into the app. Large, regenerable, and must not be committed.
+.playwright-browsers/
+
 # ── Virtual environments ──────────────────────────────────────────────────────
 .venv/
 venv/
