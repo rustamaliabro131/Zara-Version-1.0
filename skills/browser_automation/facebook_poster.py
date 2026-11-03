@@ -18,7 +18,7 @@ import time
 from typing import Optional, Callable
 
 from core import gemini
-from engine.browser_core import BrowserCore
+from engine.browser_core import BrowserCore, NavigationError, wait_for_domain
 from engine.human_browser import HumanBrowser
 from engine.browser_vision import BrowserVision
 from gui.animated_avatar import push_state
@@ -80,8 +80,20 @@ def post_to_facebook(
     try:
         # Determine target URL
         target_url = "https://business.facebook.com/latest/home" if use_business_suite else "https://www.facebook.com"
-        page = core.navigate(target_url)
+        page = core.navigate(target_url, timeout=60000)
         time.sleep(random.uniform(2.5, 4.0))
+
+        # A page still on about:blank means the load never happened (locked
+        # profile, dead context); acting on it would silently do nothing.
+        if not wait_for_domain(page, "facebook.com"):
+            msg = (
+                f"Facebook did not load — the page is still on "
+                f"'{page.url or 'about:blank'}'. Please check your connection "
+                f"and that no other Chrome window holds the browser profile, then retry."
+            )
+            log(msg)
+            push_state("Idle")
+            return msg
 
         if "login" in page.url.lower():
             msg = "Facebook login detected. Please sign in via the browser window."
@@ -198,6 +210,11 @@ def post_to_facebook(
         else:
             return "Facebook post composed in window. Please click Post to finish."
 
+    except NavigationError as e:
+        push_state("Idle")
+        note = core.consume_launch_note()
+        logger.error(f"[FacebookPoster] Navigation failed: {e}")
+        return f"Facebook automation could not open the site: {e}" + (f" {note}" if note else "")
     except Exception as e:
         logger.error(f"[FacebookPoster] Error in Facebook poster: {e}", exc_info=True)
         push_state("Idle")

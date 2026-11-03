@@ -35,6 +35,49 @@ logger = logging.getLogger("zara.browser_core")
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
+# A page that never left about:blank after a goto means navigation did not
+# happen — a locked profile, a hung load, or a dead context. Callers must be
+# able to tell that apart from a real page, so navigate() raises this instead
+# of silently returning a blank page for the skills to click at.
+BLANK_URLS = ("about:blank", "", "chrome://newtab/", "chrome://new-tab-page/")
+
+# Domains that only show a login wall; the skills detect these themselves, so
+# reaching one counts as a successful navigation.
+LOGIN_MARKERS = ("login", "signin", "sign-in", "ap/signin")
+
+
+class NavigationError(RuntimeError):
+    """Raised when a page could not be navigated to a real URL."""
+
+
+def _looks_blank(url: str) -> bool:
+    u = (url or "").strip().lower()
+    return u in BLANK_URLS or u.startswith("about:") or u.startswith("chrome://")
+
+
+def wait_for_domain(page: "Page", domain: str, timeout: int = 30000) -> bool:
+    """Wait until `page.url` is on `domain` (or a login wall on it).
+
+    Skills call this after navigate() and before touching elements: acting on a
+    page that is still about:blank is the blank-page hang. Returns True once the
+    URL matches, False on timeout, and never raises — the caller decides what a
+    miss means.
+    """
+    needle = (domain or "").strip().lower()
+    if not needle:
+        return not _looks_blank(page.url)
+    deadline = time.monotonic() + max(0, timeout) / 1000.0
+    while True:
+        url = (page.url or "").lower()
+        if needle in url or any(m in url for m in LOGIN_MARKERS):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        try:
+            page.wait_for_timeout(250)
+        except Exception:
+            return False
+
 
 def get_default_chrome_user_data_dir() -> Path:
     """Return the default system path to Google Chrome's User Data directory."""
@@ -55,6 +98,51 @@ def get_zara_isolated_profile_dir() -> Path:
     profile_dir = Path.home() / ".zara_browser_profile" / "chrome"
     profile_dir.mkdir(parents=True, exist_ok=True)
     return profile_dir
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this PID exists (POSIX; harmless guess on Windows)."""
+    if pid <= 0:
+        return False
+    try:
+        if _OS == "Windows":
+            import subprocess
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            return str(pid) in out
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def profile_in_use(profile_dir: Path) -> Optional[int]:
+    """Return the PID holding Chrome's profile lock, or None if it is free.
+
+    A running Chrome holds the profile open: Playwright's launch_persistent_context
+    then either fails or (worse) hands off to the running browser and returns a
+    context that never navigates, leaving the page on about:blank. Chrome signals
+    this with a SingletonLock symlink whose target is "<hostname>-<pid>"; on
+    Windows the lock file itself carries the PID.
+    """
+    try:
+        lock = profile_dir / "SingletonLock"
+        if lock.is_symlink():
+            target = os.readlink(lock)
+            pid = int(str(target).rsplit("-", 1)[-1])
+            return pid if _pid_alive(pid) else None
+        win_lock = profile_dir / "lockfile"
+        if win_lock.exists():
+            try:
+                pid = int(win_lock.read_text(errors="ignore").strip() or 0)
+            except (ValueError, OSError):
+                pid = 0
+            return pid if pid and _pid_alive(pid) else None
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 class BrowserCore:
@@ -84,6 +172,16 @@ class BrowserCore:
         self._owner: Optional[threading.Thread] = None
         self._requests: "queue.Queue[tuple]" = queue.Queue()
         self._owner_lock = threading.Lock()
+
+        # Human-readable note about the last launch (e.g. "profile was locked,
+        # used the Zara profile instead"). Skills read and clear it so the user
+        # hears *why* their logins may be missing, instead of guessing.
+        self.last_launch_note: Optional[str] = None
+
+    def consume_launch_note(self) -> Optional[str]:
+        """Return and clear the last launch note (any thread)."""
+        note, self.last_launch_note = self.last_launch_note, None
+        return note
 
     def _ensure_owner(self) -> None:
         """Start the dedicated Playwright thread, once."""
@@ -216,6 +314,23 @@ class BrowserCore:
                 else:
                     target_profile = get_zara_isolated_profile_dir()
 
+            # If a Chrome instance already holds this profile, launching it would
+            # hand off to the running browser and yield a context that never
+            # navigates (the about:blank hang). Detect that up front and use the
+            # Zara profile, telling the user why their logins may not appear.
+            lock_pid = profile_in_use(target_profile)
+            if lock_pid is not None:
+                fallback = get_zara_isolated_profile_dir()
+                note = (
+                    f"Chrome (PID {lock_pid}) already has the profile at "
+                    f"{target_profile} open, so Zara opened its own browser "
+                    f"profile instead. Your saved logins for this profile will "
+                    f"not be available; close Chrome and retry to reuse them."
+                )
+                logger.warning(f"[BrowserCore] {note}")
+                self.last_launch_note = note
+                target_profile = fallback
+
             logger.info(f"[BrowserCore] Target profile directory: {target_profile}")
 
             # Stealth & maximized args
@@ -263,10 +378,14 @@ class BrowserCore:
                         or "processsingleton" in err_msg
                         or "user data directory is already in use" in err_msg
                     ) and not tried_fallback:
-                        logger.warning(
-                            f"[BrowserCore] Primary profile {target_profile} is locked by an active Chrome process. "
-                            f"Falling back to Zara persistent profile."
+                        note = (
+                            f"Chrome already has the profile at {target_profile} "
+                            f"open, so Zara opened its own browser profile instead. "
+                            f"Your saved logins for this profile will not be "
+                            f"available; close Chrome and retry to reuse them."
                         )
+                        logger.warning(f"[BrowserCore] {note}")
+                        self.last_launch_note = note
                         target_profile = get_zara_isolated_profile_dir()
                         tried_fallback = True
                     else:
@@ -276,15 +395,10 @@ class BrowserCore:
             self._context = context
             self._is_running = True
 
-            # Ensure at least one page is open and configured
-            if not self._context.pages:
-                self._active_page = self._context.new_page()
-            else:
-                self._active_page = self._context.pages[0]
-
-            # Anti-detection stealth injections
+            # Stealth on the context so every page it opens carries it, not just
+            # whichever page happened to exist at launch time.
             try:
-                self._active_page.add_init_script(
+                self._context.add_init_script(
                     """
                     Object.defineProperty(navigator, 'webdriver', {
                         get: () => undefined
@@ -297,9 +411,27 @@ class BrowserCore:
             except Exception as e:
                 logger.debug(f"[BrowserCore] Stealth script injection notice: {e}")
 
+            # Select the page to drive. A persistent profile restores its tabs,
+            # so pages[0] can be a stale blank tab; prefer a real one.
+            self._active_page = self._pick_page(self._context)
+
             push_state("Idle")
             logger.info("[BrowserCore] Browser successfully launched and ready.")
             return self._context
+
+    @staticmethod
+    def _pick_page(context: BrowserContext) -> Page:
+        """Return a usable page, preferring one that is not about:blank."""
+        pages = context.pages
+        if not pages:
+            return context.new_page()
+        for page in reversed(pages):
+            try:
+                if not _looks_blank(page.url):
+                    return page
+            except Exception:
+                continue
+        return pages[-1]
 
     def get_context(self) -> BrowserContext:
         """Get or initialize the persistent browser context (any thread)."""
@@ -314,40 +446,85 @@ class BrowserCore:
         return self._marshall(self._get_active_page_impl)
 
     def _get_active_page_impl(self) -> Page:
+        # Reuse the cached page when it is still open, so a workflow's page does
+        # not change under it between calls.
+        cached = self._active_page
+        if cached is not None:
+            try:
+                if not cached.is_closed():
+                    return cached
+            except Exception:
+                pass
         ctx = self._context if self.is_active() else self._launch_impl(
             self.user_data_dir, self.headless)
-        if not ctx.pages:
-            self._active_page = ctx.new_page()
-        else:
-            # Prefer last focused or first page
-            self._active_page = ctx.pages[-1]
+        self._active_page = self._pick_page(ctx)
         return self._active_page
 
     def navigate(
         self,
         url: str,
         wait_until: str = "domcontentloaded",
-        timeout: int = 45000,
+        timeout: int = 60000,
+        attempts: int = 2,
     ) -> Page:
-        """Navigate active page to URL with state notifications (any thread)."""
+        """Navigate the active page to `url` (any thread).
+
+        Raises NavigationError when the page is still blank afterwards, so a
+        locked profile or a dead load surfaces as a clear message instead of a
+        blank page the skills would silently click at.
+        """
         return self._marshall(
-            lambda: self._navigate_impl(url, wait_until, timeout)
+            lambda: self._navigate_impl(url, wait_until, timeout, attempts)
         )
 
     def _navigate_impl(
         self,
         url: str,
         wait_until: str = "domcontentloaded",
-        timeout: int = 45000,
+        timeout: int = 60000,
+        attempts: int = 2,
     ) -> Page:
         page = self._get_active_page_impl()
         push_state("Analyzing")
-        logger.info(f"[BrowserCore] Navigating to: {url}")
-        try:
-            page.goto(url, wait_until=wait_until, timeout=timeout)
-        except Exception as e:
-            logger.warning(f"[BrowserCore] Navigation warning on {url}: {e}")
-        return page
+
+        last_err: Optional[Exception] = None
+        for attempt in range(1, max(1, attempts) + 1):
+            logger.info(
+                f"[BrowserCore] Navigating to: {url} "
+                f"(attempt {attempt}/{max(1, attempts)}, timeout={timeout}ms)"
+            )
+            try:
+                page.goto(url, wait_until=wait_until, timeout=timeout)
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    f"[BrowserCore] Navigation attempt {attempt} failed on {url}: {e}"
+                )
+                # A page that is gone cannot be retried on; get a fresh one.
+                try:
+                    if page.is_closed():
+                        self._active_page = None
+                        page = self._get_active_page_impl()
+                except Exception:
+                    pass
+                continue
+
+            if not _looks_blank(page.url):
+                logger.info(f"[BrowserCore] Landed on: {page.url}")
+                return page
+
+            logger.warning(
+                f"[BrowserCore] Navigation to {url} left the page on "
+                f"'{page.url or 'about:blank'}'."
+            )
+
+        note = self.last_launch_note
+        detail = f" ({last_err})" if last_err else ""
+        hint = f" {note}" if note else ""
+        raise NavigationError(
+            f"Could not navigate to {url}: the page stayed on "
+            f"about:blank{detail}.{hint}"
+        )
 
     def close(self) -> None:
         """Safely close context and stop Playwright (any thread)."""

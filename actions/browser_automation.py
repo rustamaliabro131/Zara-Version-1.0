@@ -150,10 +150,15 @@ def _run_browser_automation(parameters: dict, player=None, speak=None) -> str:
 
     # Fallback / General URL Navigation
     elif url:
-        from engine.browser_core import BrowserCore
+        from engine.browser_core import BrowserCore, NavigationError
         core = BrowserCore.get_instance()
-        page = core.navigate(url)
-        return f"Navigated to {url} using persistent browser session."
+        try:
+            page = core.navigate(url, timeout=60000)
+        except NavigationError as e:
+            note = core.consume_launch_note()
+            log(f"Navigation failed: {e}")
+            return f"Could not open {url}: {e}" + (f" {note}" if note else "")
+        return f"Navigated to {page.url} using persistent browser session."
 
     else:
         return (

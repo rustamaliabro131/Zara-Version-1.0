@@ -17,7 +17,7 @@ import time
 from typing import Optional, List, Callable
 
 from core import gemini
-from engine.browser_core import BrowserCore
+from engine.browser_core import BrowserCore, NavigationError, wait_for_domain
 from engine.human_browser import HumanBrowser
 from engine.browser_vision import BrowserVision
 from gui.animated_avatar import push_state
@@ -89,8 +89,18 @@ def create_fiverr_gig(
     try:
         # Step 1: Navigate to Fiverr Gig Creation
         fiverr_url = "https://www.fiverr.com/manage_gigs/new"
-        page = core.navigate(fiverr_url)
+        page = core.navigate(fiverr_url, timeout=60000)
         time.sleep(random.uniform(2.5, 4.0))
+
+        if not wait_for_domain(page, "fiverr.com"):
+            msg = (
+                f"Fiverr did not load — the page is still on "
+                f"'{page.url or 'about:blank'}'. Please check your connection "
+                f"and that no other Chrome window holds the browser profile, then retry."
+            )
+            log(msg)
+            push_state("Idle")
+            return msg
 
         if "login" in page.url.lower():
             msg = "Fiverr login detected. Please sign in to your seller account in the browser."
@@ -226,6 +236,11 @@ def create_fiverr_gig(
             log(res)
             return res
 
+    except NavigationError as e:
+        push_state("Idle")
+        note = core.consume_launch_note()
+        logger.error(f"[FiverrCreator] Navigation failed: {e}")
+        return f"Fiverr automation could not open the site: {e}" + (f" {note}" if note else "")
     except Exception as e:
         logger.error(f"[FiverrCreator] Error in Fiverr gig creation: {e}", exc_info=True)
         push_state("Idle")
