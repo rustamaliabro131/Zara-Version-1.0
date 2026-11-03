@@ -1,0 +1,12 @@
+[User Voice / Text Command] 
+          │
+          ▼
+[Zara Orchestrator (Gemini API)] ──► Analyzes Task & Breaks into Steps
+          │
+          ▼
+[Browser Control Layer (Playwright + Vision AI)]
+   ├── 1. Daraz: Search items, click product, add to cart
+   ├── 2. Upwork: Navigate proposals page, fill form, submit bid
+   ├── 3. Fiverr: Navigate gig builder, upload tags/images, publish gig
+   ├── 4. Facebook: Open creator studio, write post, upload image, publish
+   └── 5. Amazon KDP: Fill ebook details, upload manuscript & cover, publish

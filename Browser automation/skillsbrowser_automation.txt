@@ -1,0 +1,7 @@
+upwork_bidder.py: Upwork job link open karegi, proposal text field mein Zara ka generated proposal paste karegi, aur "Submit Proposal" button par click karegi.
+
+fiverr_gig_publisher.py: Fiverr gig creation page par ja kar title, description, pricing, aur tags fill karegi.
+
+facebook_poster.py: Facebook creator studio ya feed par ja kar text type karegi, media attach karegi, aur post publish karegi.
+
+amazon_kdp_uploader.py: KDP dashboard par ja kar eBook ka title, description, category set karegi aur files upload karegi.

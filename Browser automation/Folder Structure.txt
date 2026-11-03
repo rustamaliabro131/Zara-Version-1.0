@@ -1,0 +1,7 @@
+engine/
+├── browser_core.py       # Persistent Chrome profile loader
+└── human_browser.py      # Human mouse/keyboard delays
+skills/
+└── browser_automation/   # Task scripts (Upwork, KDP, Fiverr, Facebook)
+    ├── upwork_bidder.py
+    └── amazon_kdp_publisher.py
