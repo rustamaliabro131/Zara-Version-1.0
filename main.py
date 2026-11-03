@@ -3087,7 +3087,24 @@ def _start_gif_avatar(ui):
 # from the raw mic audio (see _listen_audio), and core/stt.py's Whisper/Vosk
 # engines are only used by offline skills. Warming them here would download a
 # model the normal startup never touches.
-_STARTUP_TIMEOUT = float(_os.environ.get("ZARA_INIT_TIMEOUT", "25") or 25)
+def _parse_startup_timeout() -> float:
+    """Seconds the startup warm-up may take, from ZARA_INIT_TIMEOUT.
+
+    A malformed value must not stop the app from starting: this runs at import,
+    so a ValueError here would kill the process before a window ever appears —
+    the opposite of what the timeout is for. Anything unparseable falls back to
+    the default.
+    """
+    raw = _os.environ.get("ZARA_INIT_TIMEOUT", "25")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        print(f"[{LOG_TAG}] ⚠ ZARA_INIT_TIMEOUT={raw!r} is not a number — using 25s.")
+        return 25.0
+    return value if value > 0 else 25.0
+
+
+_STARTUP_TIMEOUT = _parse_startup_timeout()
 
 
 class _StartupCoordinator:
@@ -3218,22 +3235,38 @@ def initialize_systems(ui, coord: Optional["_StartupCoordinator"] = None) -> Non
     _push_state_queue("Initialising")
     print(f"[{LOG_TAG}] Initialising systems in the background…")
 
-    deadline = time.monotonic() + _STARTUP_TIMEOUT
-    for label, step in (
-        ("audio-devices", _warm_audio_devices),
-        ("api-client",    _warm_api_client),
-        ("tts-engine",    _warm_tts_engine),
-        ("browser-core",  _warm_browser_core),
-    ):
-        _run_bounded(label, step, deadline)
-
-    # Hand the HUD over. Skipped while the setup modal is still asking for a key
-    # (the setup flow owns that transition) or once the session has published a
-    # state of its own.
-    ready = bool(getattr(getattr(ui, "_win", None), "_ready", True))
-    if ready:
-        coord.publish_idle(ui)
-    print(f"[{LOG_TAG}] Startup initialisation complete.")
+    try:
+        deadline = time.monotonic() + _STARTUP_TIMEOUT
+        for label, step in (
+            ("audio-devices", _warm_audio_devices),
+            ("api-client",    _warm_api_client),
+            ("tts-engine",    _warm_tts_engine),
+            ("browser-core",  _warm_browser_core),
+        ):
+            _run_bounded(label, step, deadline)
+    except Exception as e:
+        # _run_bounded already contains each step, so reaching here means the
+        # harness itself failed. Report it and fall through to the handshake
+        # below: the whole point of this worker is that the HUD is never left
+        # on INITIALISING, and letting the exception escape would do exactly
+        # that by killing the thread before it publishes anything.
+        print(f"[{LOG_TAG}] ⚠ Startup warm-up aborted (non-fatal): {e}")
+    finally:
+        # Hand the HUD over. Skipped while the setup modal is still asking for a
+        # key (the setup flow owns that transition) or once the session has
+        # published a state of its own. This runs even on the failure path above,
+        # so the handshake cannot be skipped.
+        try:
+            ready = bool(getattr(getattr(ui, "_win", None), "_ready", True))
+            if ready:
+                coord.publish_idle(ui)
+        except Exception as e:
+            print(f"[{LOG_TAG}] ⚠ Idle handshake failed: {e}")
+            try:
+                coord.publish_idle(ui, force=True)
+            except Exception:
+                pass
+        print(f"[{LOG_TAG}] Startup initialisation complete.")
 
 
 def _install_startup_state_guard(ui, coord: "_StartupCoordinator") -> None:
